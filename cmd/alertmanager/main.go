@@ -131,7 +131,7 @@ const defaultClusterAddr = "0.0.0.0:9094"
 
 // buildReceiverIntegrations builds a list of integration notifiers off of a
 // receiver config.
-func buildReceiverIntegrations(nc config.Receiver, tmpl *template.Template, logger log.Logger) ([]notify.Integration, error) {
+func buildReceiverIntegrations(cfg *config.Config, nc config.Receiver, tmpl *template.Template, logger log.Logger) ([]notify.Integration, error) {
 	var (
 		errs         types.MultiError
 		integrations []notify.Integration
@@ -146,7 +146,7 @@ func buildReceiverIntegrations(nc config.Receiver, tmpl *template.Template, logg
 	)
 
 	for i, c := range nc.WebhookConfigs {
-		add("webhook", i, c, func(l log.Logger) (notify.Notifier, error) { return webhook.New(c, tmpl, l) })
+		add("webhook", i, c, func(l log.Logger) (notify.Notifier, error) { return webhook.New(cfg, c, tmpl, l) })
 	}
 	for i, c := range nc.EmailConfigs {
 		add("email", i, c, func(l log.Logger) (notify.Notifier, error) { return email.New(c, tmpl, l), nil })
@@ -446,7 +446,7 @@ func run() int {
 				level.Info(configLogger).Log("msg", "skipping creation of receiver not referenced by any route", "receiver", rcv.Name)
 				continue
 			}
-			integrations, err := buildReceiverIntegrations(rcv, tmpl, logger)
+			integrations, err := buildReceiverIntegrations(conf, rcv, tmpl, logger)
 			if err != nil {
 				return err
 			}

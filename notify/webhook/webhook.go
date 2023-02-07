@@ -18,6 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/elastic/go-elasticsearch/v7"
+	"github.com/gofrs/uuid"
+	"github.com/prometheus/alertmanager/api/es"
 	"io"
 	"net/http"
 
@@ -38,10 +41,13 @@ type Notifier struct {
 	logger  log.Logger
 	client  *http.Client
 	retrier *notify.Retrier
+
+	alertManagerConf *config.Config
+	es               *elasticsearch.Client
 }
 
 // New returns a new Webhook.
-func New(conf *config.WebhookConfig, t *template.Template, l log.Logger, httpOpts ...commoncfg.HTTPClientOption) (*Notifier, error) {
+func New(cfg *config.Config, conf *config.WebhookConfig, t *template.Template, l log.Logger, httpOpts ...commoncfg.HTTPClientOption) (*Notifier, error) {
 	client, err := commoncfg.NewClientFromConfig(*conf.HTTPConfig, "webhook", httpOpts...)
 	if err != nil {
 		return nil, err
@@ -58,6 +64,7 @@ func New(conf *config.WebhookConfig, t *template.Template, l log.Logger, httpOpt
 				return errDetails(body, conf.URL.String())
 			},
 		},
+		alertManagerConf: cfg,
 	}, nil
 }
 
@@ -106,8 +113,66 @@ func (n *Notifier) Notify(ctx context.Context, alerts ...*types.Alert) (bool, er
 		return true, notify.RedactURL(err)
 	}
 	defer notify.Drain(resp)
+	// 告警写入es
+	if n.alertManagerConf.Global.ESEnableAfterAlert {
+		if n.es != nil {
+			_ = n.BatchIntoES(alerts...)
+		} else {
+			n.InitEsClient()
+			_ = n.BatchIntoES(alerts...)
+		}
+	}
 
 	return n.retrier.Check(resp.StatusCode, resp.Body)
+}
+
+func (n *Notifier) BatchIntoES(alerts ...*types.Alert) error {
+	var buf bytes.Buffer
+	for _, alert := range alerts {
+		esAlert := es.Convert(alert)
+		//fmt.Printf("调试：%T\n", esAlert)
+		metadata := []byte(fmt.Sprintf(`{"index": {"_id": "%s"}}%s`, uuid.Must(uuid.NewV4()), "\n"))
+		data, err := json.Marshal(esAlert)
+		if err != nil {
+			level.Error(n.logger).Log("msg", "Marshal ESAlerts to string error", "err", err)
+			continue
+		}
+		data = append(data, "\n"...)
+		buf.Grow(len(metadata) + len(data))
+		buf.Write(metadata)
+		buf.Write(data)
+	}
+	_, err := n.es.Bulk(bytes.NewReader(buf.Bytes()), n.es.Bulk.WithIndex(n.alertManagerConf.Global.ESIndexNameNotified), n.es.Bulk.WithRefresh(n.alertManagerConf.Global.ESIndexRefresh))
+	if err != nil {
+		level.Error(n.logger).Log("msg", "doing ES Bulk API error", "err", err)
+		return err
+	}
+	return nil
+}
+
+func (n *Notifier) InitEsClient() {
+	if n.alertManagerConf.Global.ESEnable {
+		esClient, err := elasticsearch.NewClient(elasticsearch.Config{
+			Addresses:         n.alertManagerConf.Global.ESAddresses,
+			Username:          n.alertManagerConf.Global.ESUserName,
+			Password:          n.alertManagerConf.Global.ESPassword,
+			DisableRetry:      n.alertManagerConf.Global.ESDisableRetry,
+			MaxRetries:        n.alertManagerConf.Global.ESMaxRetries,
+			EnableMetrics:     n.alertManagerConf.Global.ESEnableMetrics,
+			EnableDebugLogger: n.alertManagerConf.Global.ESEnableDebugLogger,
+		})
+		if err != nil {
+			level.Error(n.logger).Log("msg", "Create ES client error", "err", err)
+		} else {
+			// Ping
+			_, pingError := esClient.Ping()
+			if pingError == nil {
+				n.es = esClient
+			} else {
+				level.Error(n.logger).Log("msg", "Ping ES service error", "err", pingError)
+			}
+		}
+	}
 }
 
 func errDetails(body io.Reader, url string) string {

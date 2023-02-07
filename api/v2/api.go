@@ -14,7 +14,12 @@
 package v2
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"github.com/elastic/go-elasticsearch/v7"
+	"github.com/gofrs/uuid"
+	"github.com/prometheus/alertmanager/api/es"
 	"net/http"
 	"regexp"
 	"sort"
@@ -72,6 +77,7 @@ type API struct {
 	m      *metrics.Alerts
 
 	Handler http.Handler
+	es      *elasticsearch.Client
 }
 
 type (
@@ -147,6 +153,30 @@ func (api *API) Update(cfg *config.Config, setAlertStatus setAlertStatusFn) {
 	api.alertmanagerConfig = cfg
 	api.route = dispatch.NewRoute(cfg.Route, nil)
 	api.setAlertStatus = setAlertStatus
+	// Create ES client
+	if cfg.Global.ESEnable {
+		esClient, err := elasticsearch.NewClient(elasticsearch.Config{
+			Addresses:         cfg.Global.ESAddresses,
+			Username:          cfg.Global.ESUserName,
+			Password:          cfg.Global.ESPassword,
+			DisableRetry:      cfg.Global.ESDisableRetry,
+			MaxRetries:        cfg.Global.ESMaxRetries,
+			EnableMetrics:     cfg.Global.ESEnableMetrics,
+			EnableDebugLogger: cfg.Global.ESEnableDebugLogger,
+		})
+		if err != nil {
+			level.Error(api.logger).Log("msg", "Create ES client error", "err", err)
+		} else {
+			// ping
+			_, pingError := esClient.Ping()
+			if pingError == nil {
+				api.es = esClient
+			} else {
+				level.Error(api.logger).Log("msg", "Ping ES service error", "error", pingError)
+			}
+		}
+	}
+
 }
 
 func (api *API) getStatusHandler(params general_ops.GetStatusParams) middleware.Responder {
@@ -292,6 +322,30 @@ func (api *API) getAlertsHandler(params alert_ops.GetAlertsParams) middleware.Re
 	return alert_ops.NewGetAlertsOK().WithPayload(res)
 }
 
+func (api *API) BatchIntoES(alerts ...*types.Alert) error {
+	var buf bytes.Buffer
+	for _, alert := range alerts {
+		esAlert := es.Convert(alert)
+		metadata := []byte(fmt.Sprintf(`{"index": {"_id": "%s"}}%s`, uuid.Must(uuid.NewV4()), "\n"))
+		data, err := json.Marshal(esAlert)
+		if err != nil {
+			level.Error(api.logger).Log("msg", "Marshal ESAlerts to string error", "err", err)
+			continue
+		}
+		data = append(data, "\n"...)
+		buf.Grow(len(metadata) + len(data))
+		buf.Write(metadata)
+		buf.Write(data)
+	}
+	_, err := api.es.Bulk(bytes.NewReader(buf.Bytes()), api.es.Bulk.WithIndex(api.alertmanagerConfig.Global.ESIndexNameRaw),
+		api.es.Bulk.WithRefresh(api.alertmanagerConfig.Global.ESIndexRefresh))
+	if err != nil {
+		level.Error(api.logger).Log("msg", "doing ES Bulk API error", "err", err)
+		return err
+	}
+	return nil
+}
+
 func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.Responder {
 	logger := api.requestLogger(params.HTTPRequest)
 
@@ -341,6 +395,11 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 		}
 		validAlerts = append(validAlerts, a)
 	}
+
+	if api.es != nil {
+		_ = api.BatchIntoES(validAlerts...)
+	}
+
 	if err := api.alerts.Put(validAlerts...); err != nil {
 		level.Error(logger).Log("msg", "Failed to create alerts", "err", err)
 		return alert_ops.NewPostAlertsInternalServerError().WithPayload(err.Error())

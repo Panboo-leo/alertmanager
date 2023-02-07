@@ -14,10 +14,14 @@
 package v1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gofrs/uuid"
+	"github.com/prometheus/alertmanager/api/es"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"sync"
@@ -39,6 +43,8 @@ import (
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/silence/silencepb"
 	"github.com/prometheus/alertmanager/types"
+
+	"github.com/elastic/go-elasticsearch/v7"
 )
 
 var corsHeaders = map[string]string{
@@ -79,6 +85,7 @@ type API struct {
 	getAlertStatus getAlertStatusFn
 
 	mtx sync.RWMutex
+	es  *elasticsearch.Client
 }
 
 type getAlertStatusFn func(model.Fingerprint) types.AlertStatus
@@ -138,6 +145,32 @@ func (api *API) Update(cfg *config.Config) {
 
 	api.config = cfg
 	api.route = dispatch.NewRoute(cfg.Route, nil)
+
+	// Create ES client
+	if cfg.Global.ESEnable {
+		esClient, err := elasticsearch.NewClient(elasticsearch.Config{
+			Addresses:         cfg.Global.ESAddresses,
+			Username:          cfg.Global.ESUserName,
+			Password:          cfg.Global.ESPassword,
+			DisableRetry:      cfg.Global.ESDisableRetry,
+			MaxRetries:        cfg.Global.ESMaxRetries,
+			EnableMetrics:     cfg.Global.ESEnableMetrics,
+			EnableDebugLogger: cfg.Global.ESEnableDebugLogger,
+		})
+		if err != nil {
+			level.Error(api.logger).Log("msg", "Create ES client error", "err", err)
+		} else {
+			// ping
+			_, pingError := esClient.Ping()
+			if pingError == nil {
+				api.es = esClient
+				//	fmt.Println("调试4：\n", api.es)
+			} else {
+				level.Error(api.logger).Log("msg", "Ping ES service error", "error", pingError)
+			}
+		}
+	}
+
 }
 
 type errorType string
@@ -405,6 +438,30 @@ func (api *API) addAlerts(w http.ResponseWriter, r *http.Request) {
 	api.insertAlerts(w, r, alerts...)
 }
 
+func (api *API) BatchIntoES(alerts ...*types.Alert) error {
+	var buf bytes.Buffer
+	for _, alert := range alerts {
+		esAlert := es.Convert(alert)
+		metadata := []byte(fmt.Sprintf(`{"index": {"_id": "%s"}}%s`, uuid.Must(uuid.NewV4()), "\n"))
+		data, err := json.Marshal(esAlert)
+		if err != nil {
+			level.Error(api.logger).Log("msg", "Marshal ESAlerts to string error", "err", err)
+			continue
+		}
+		data = append(data, "\n"...)
+		buf.Grow(len(metadata) + len(data))
+		buf.Write(metadata)
+		buf.Write(data)
+	}
+	_, err := api.es.Bulk(bytes.NewReader(buf.Bytes()), api.es.Bulk.WithIndex(api.config.Global.ESIndexNameRaw),
+		api.es.Bulk.WithRefresh(api.config.Global.ESIndexRefresh))
+	if err != nil {
+		level.Error(api.logger).Log("msg", "doing ES Bulk API error", "err", err)
+		return err
+	}
+	return nil
+}
+
 func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*types.Alert) {
 	now := time.Now()
 
@@ -451,6 +508,15 @@ func (api *API) insertAlerts(w http.ResponseWriter, r *http.Request, alerts ...*
 		}
 		validAlerts = append(validAlerts, a)
 	}
+	// 插入ES
+	if api.config.Global.ESEnableBeforeAlert {
+		if api.es != nil {
+			_ = api.BatchIntoES(validAlerts...)
+			logge := log.NewLogfmtLogger(os.Stdout)
+			logge.Log("执行批量插入")
+		}
+	}
+
 	if err := api.alerts.Put(validAlerts...); err != nil {
 		api.respondError(w, apiError{
 			typ: errorInternal,
