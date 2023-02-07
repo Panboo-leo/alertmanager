@@ -753,6 +753,23 @@ type GlobalConfig struct {
 	VictorOpsAPIKeyFile  string     `yaml:"victorops_api_key_file,omitempty" json:"victorops_api_key_file,omitempty"`
 	TelegramAPIUrl       *URL       `yaml:"telegram_api_url,omitempty" json:"telegram_api_url,omitempty"`
 	WebexAPIURL          *URL       `yaml:"webex_api_url,omitempty" json:"webex_api_url,omitempty"`
+
+	//ES
+	ESEnable            bool     `yaml:"es_enable,omitempty" json:"es_enable,omitempty"`
+	ESEnableBeforeAlert bool     `yaml:"es_enable_before_alert,omitempty" json:"es_enable_before_alert,omitempty"`
+	ESEnableAfterAlert  bool     `yaml:"es_enable_after_alert,omitempty" json:"es_enable_after_alert,omitempty"`
+	ESAddresses         []string `yaml:"es_addresses,omitempty" json:"es_addresses,omitempty"`
+	ESUserName          string   `yaml:"es_user_name,omitempty" json:"es_user_name,omitempty"`
+	ESPassword          string   `yaml:"es_password,omitempty" json:"es_password,omitempty"`
+	ESMaxRetries        int      `yaml:"es_max_retries,omitempty" json:"es_max_retries,omitempty"`
+	ESDisableRetry      bool     `yaml:"es_disable_retry,omitempty" json:"es_disable_retry,omitempty"`
+	ESEnableMetrics     bool     `yaml:"es_enable_metrics,omitempty" json:"es_enable_metrics,omitempty"`
+	ESEnableDebugLogger bool     `yaml:"es_enable_debug_logger,omitempty" json:"es_enable_debug_logger,omitempty"`
+
+	// ES index
+	ESIndexNameRaw      string `yaml:"es_index_name_raw,omitempty" json:"es_index_name_raw,omitempty"`
+	ESIndexNameNotified string `yaml:"es_index_name_notified,omitempty" json:"es_index_name_notified,omitempty"`
+	ESIndexRefresh      string `yaml:"es_index_refresh,omitempty" json:"es_index_refresh,omitempty"`
 }
 
 // UnmarshalYAML implements the yaml.Unmarshaler interface for GlobalConfig.

@@ -8,6 +8,7 @@ require (
 	github.com/benbjohnson/clock v1.3.0
 	github.com/cenkalti/backoff/v4 v4.2.0
 	github.com/cespare/xxhash/v2 v2.2.0
+	github.com/elastic/go-elasticsearch/v7 v7.17.7
 	github.com/go-kit/log v0.2.1
 	github.com/go-openapi/analysis v0.21.4
 	github.com/go-openapi/errors v0.20.3
