@@ -72,6 +72,7 @@ type API struct {
 	alertmanagerConfig *config.Config
 	route              *dispatch.Route
 	setAlertStatus     setAlertStatusFn
+	// esConfig           *config.GlobalConfig
 
 	logger log.Logger
 	m      *metrics.Alerts
@@ -408,9 +409,10 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 		}
 		validAlerts = append(validAlerts, a)
 	}
-
-	if api.es != nil {
-		_ = api.BatchIntoES(validAlerts...)
+	if api.alertmanagerConfig.Global.ESEnableBeforeAlert {
+		if api.es != nil {
+			_ = api.BatchIntoES(validAlerts...)
+		}
 	}
 
 	if err := api.alerts.Put(validAlerts...); err != nil {
